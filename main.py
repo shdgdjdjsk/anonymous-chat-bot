@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-TOKEN = "8930824734:AAH62Ai34Na96KOPc-9GI-NgxCtgtejDjEc"
+TOKEN = "8830620581:AAEWbfbdkZY86vcufK3Y51mJ9vXU6l7rcxw"
 ADMIN_ID = 8859438543
 
 async def init_db():
