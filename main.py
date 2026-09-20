@@ -1,4 +1,4 @@
-import asyncio
+        import asyncio
 import logging
 import aiosqlite
 from datetime import datetime, timedelta
@@ -154,7 +154,6 @@ async def process_gender(message: Message, state: FSMContext):
 async def show_profile(message: Message):
     user_id = message.from_user.id
     async with aiosqlite.connect("chat.db") as db:
-        # Проверка актуальности премиума по времени
         async with db.execute("SELECT is_premium, premium_expires FROM users WHERE user_id = ?", (user_id,)) as cursor:
             prem_data = await cursor.fetchone()
         if prem_data and prem_data[0] == 1 and prem_data[1]:
@@ -186,7 +185,6 @@ async def show_profile(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-# --- ПОКУПКА ПРЕМИУМА НА РАЗНЫЕ СРОКИ ---
 @dp.message(F.text == "⭐ Купить Премиум")
 async def buy_premium_menu(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -246,7 +244,6 @@ async def successful_payment_handler(message: Message):
     except Exception:
         pass
 
-# --- ПОИСК СОБЕСЕДНИКА С ВЫБОРОМ ПОЛА ДЛЯ ПРЕМИУМ ---
 @dp.message(F.text == "🔎 Найти собеседника")
 async def search_companion_start(message: Message):
     user_id = message.from_user.id
@@ -290,12 +287,10 @@ async def start_searching(message: Message, target_gender: str):
             user_row = await cursor.fetchone()
         user_gender = user_row[0] if user_row else "Любой"
 
-        # Ищем подходящего собеседника из очереди
         if target_gender == "Любой":
             async with db.execute("SELECT user_id, gender FROM queue WHERE user_id != ?", (user_id,)) as cursor:
                 companion = await cursor.fetchone()
         else:
-            # Ищем человека нужного пола, у которого в предпочтениях либо "Любой", либо наш пол
             async with db.execute("""
                 SELECT q.user_id, q.target_gender FROM queue q 
                 JOIN users u ON q.user_id = u.user_id 
@@ -340,7 +335,6 @@ async def start_searching(message: Message, target_gender: str):
             await db.commit()
             await message.answer("Ищем подходящего собеседника... Ожидайте ⏳", reply_markup=main_kb)
 
-# --- ОСТАЛЬНОЙ ФУНКЦИОНАЛ (ПОДАРКИ, ДИАЛОГ, ЖАЛОБЫ) ---
 @dp.message(F.text == "🎁 Подарить звёзды")
 async def gift_stars_menu(message: Message):
     user_id = message.from_user.id
@@ -454,3 +448,12 @@ async def forward_handler(message: Message):
     ]
     
     if message.text in service_buttons or (message.text and message.text.startswith("/")):
+        return
+
+    user_id = message.from_user.id
+    async with aiosqlite.connect("chat.db") as db:
+        async with db.execute("SELECT user1, user2 FROM active_chats WHERE user1 = ? OR user2 = ?", (user_id, user_id)) as cursor:
+            chat = await cursor.fetchone()
+        
+        if chat:
+            companion_id = chat[1] if chat[0] == us
