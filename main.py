@@ -85,24 +85,40 @@ async def cmd_start(message: Message, state: FSMContext):
         async with db.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if row and row[0] == 1:
-                await message.answer("❌ Вы заблокированы в этом боте за большое количество жалоб.")
+                await message.answer(
+                    "🚫 **Доступ ограничен**\n\n"
+                    "<i>Вы заблокированы в этом боте за большое количество жалоб.</i>",
+                    parse_mode="HTML"
+                )
                 return
 
         async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
             exists = await cursor.fetchone()
 
     if not exists:
-        await message.answer("Привет! Добро пожаловать в анонимный чат.\nДавай заполним анкету. Как тебя зовут (или какой псевдоним)?")
+        await message.answer(
+            "👋 **Добро пожаловать в анонимный чат!**\n\n"
+            "<i>Давай заполним небольшую анкету. Как тебя зовут (или какой псевдоним)?</i>",
+            parse_mode="HTML"
+        )
         await state.set_state(RegisterState.waiting_for_name)
     else:
-        await message.answer("С возвращением! Главное меню:", reply_markup=main_kb)
+        await message.answer(
+            "✨ **С возвращением!**\n\n"
+            "<i>Выберите нужное действие в главном меню ниже 👇</i>",
+            reply_markup=main_kb, parse_mode="HTML"
+        )
 
 @dp.message(RegisterState.waiting_for_name, F.text)
 async def process_name(message: Message, state: FSMContext):
     if message.text.startswith("/"):
         return
     await state.update_data(name=message.text)
-    await message.answer("Сколько тебе лет? (введи цифрой от 16)")
+    await message.answer(
+        "🎂 **Сколько тебе лет?**\n\n"
+        "<i>Введите возраст цифрой (доступно от 16 лет):</i>",
+        parse_mode="HTML"
+    )
     await state.set_state(RegisterState.waiting_for_age)
 
 @dp.message(RegisterState.waiting_for_age, F.text)
@@ -112,20 +128,27 @@ async def process_age(message: Message, state: FSMContext):
     if message.text.isdigit():
         age = int(message.text)
         if age < 16:
-            await message.answer("⚠️ Извините, бот предназначен для пользователей от 16 лет.")
+            await message.answer(
+                "⚠️ **Ограничение по возрасту**\n\n"
+                "<i>Извините, бот предназначен только для пользователей от 16 лет.</i>",
+                parse_mode="HTML"
+            )
             return
     else:
-        await message.answer("Пожалуйста, введи возраст цифрами.")
+        await message.answer("⚠️ Пожалуйста, введи возраст цифрами.")
         return
         
     await state.update_data(age=age)
-    await message.answer("Укажи свой пол:", reply_markup=gender_kb)
+    await message.answer(
+        "🚻 **Укажите свой пол:**",
+        reply_markup=gender_kb, parse_mode="HTML"
+    )
     await state.set_state(RegisterState.waiting_for_gender)
 
 @dp.message(RegisterState.waiting_for_gender, F.text)
 async def process_gender(message: Message, state: FSMContext):
     if message.text not in ["Парень", "Девушка"]:
-        await message.answer("Пожалуйста, выберите пол с помощью кнопок ниже.")
+        await message.answer("⚠️ Пожалуйста, выберите пол с помощью кнопок ниже.")
         return
 
     gender = message.text
@@ -147,7 +170,11 @@ async def process_gender(message: Message, state: FSMContext):
         await db.commit()
 
     await state.clear()
-    await message.answer("✅ Регистрация завершена! Добро пожаловать.", reply_markup=main_kb)
+    await message.answer(
+        "✅ **Регистрация успешно завершена!**\n\n"
+        "<i>Добро пожаловать в систему. Приятного общения!</i>",
+        reply_markup=main_kb, parse_mode="HTML"
+    )
 
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: Message):
@@ -164,7 +191,7 @@ async def show_profile(message: Message):
             row = await cursor.fetchone()
 
     if not row:
-        await message.answer("Сначала пройдите регистрацию через /start")
+        await message.answer("❌ Сначала пройдите регистрацию через команду /start")
         return
 
     name, age, gender, username, is_premium, expires, complaints, sent, received, stars = row
@@ -172,12 +199,12 @@ async def show_profile(message: Message):
 
     text = (
         f"👤 **Ваш профиль:**\n\n"
-        f"🏷 Имя: {name}\n"
-        f"🎂 Возраст: {age}\n"
-        f"🚻 Пол: {gender}\n"
-        f"🔗 Юзернейм: {'@' + username if username else 'Не указан'}\n"
-        f"💎 Статус: {status}\n"
-        f"⭐ Баланс звёзд для подарков: {stars} ⭐\n\n"
+        f"🏷 **Имя:** {name}\n"
+        f"🎂 **Возраст:** {age}\n"
+        f"🚻 **Пол:** {gender}\n"
+        f"🔗 **Юзернейм:** {'@' + username if username else 'Не указан'}\n"
+        f"💎 **Статус:** {status}\n"
+        f"⭐ **Баланс звёзд:** {stars} ⭐\n\n"
         f"📊 **Статистика:**\n"
         f"💬 Отправлено: {sent} | Получено: {received}\n"
         f"⚠️ Жалобы: {complaints} / 20"
@@ -187,12 +214,16 @@ async def show_profile(message: Message):
 @dp.message(F.text == "⭐ Купить Премиум")
 async def buy_premium_menu(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 день — 75 ⭐", callback_data="buy_prem_1")],
-        [InlineKeyboardButton(text="3 дня — 139 ⭐", callback_data="buy_prem_3")],
-        [InlineKeyboardButton(text="7 дней — 289 ⭐", callback_data="buy_prem_7")],
-        [InlineKeyboardButton(text="30 дней — 489 ⭐", callback_data="buy_prem_30")]
+        [InlineKeyboardButton(text="⭐ 1 день — 75 XTR", callback_data="buy_prem_1")],
+        [InlineKeyboardButton(text="⭐ 3 дня — 139 XTR", callback_data="buy_prem_3")],
+        [InlineKeyboardButton(text="⭐ 7 дней — 289 XTR", callback_data="buy_prem_7")],
+        [InlineKeyboardButton(text="⭐ 30 дней — 489 XTR", callback_data="buy_prem_30")]
     ])
-    await message.answer("⭐ **Выберите период подписки Премиум:**\n\nПремиум дает доступ к расширенным анкетным данным и **выбору пола собеседника** при поиске!", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(
+        "💎 **Премиум-подписка**\n\n"
+        "<i>Дает доступ к расширенным анкетным данным собеседника и возможности выбора пола при поиске!\n\nВыберите период подписки:</i>",
+        reply_markup=kb, parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data.startswith("buy_prem_"))
 async def process_buy_prem(callback: types.CallbackQuery):
@@ -237,9 +268,17 @@ async def successful_payment_handler(message: Message):
         """, (expires_at.isoformat(), user_id))
         await db.commit()
 
-    await message.answer(f"🎉 Успешно! Вам активирован Премиум-статус 👑 на {days} дн. и начислено +10 бонусных звёзд!")
+    await message.answer(
+        f"🎉 **Оплата прошла успешно!**\n\n"
+        f"<i>Вам активирован Премиум-статус 👑 на {days} дн. и начислено +10 бонусных звёзд ⭐!</i>",
+        parse_mode="HTML"
+    )
     try:
-        await message.bot.send_message(ADMIN_ID, f"💰 Пользователь ID {user_id} купил Премиум на {days} дней!")
+        await message.bot.send_message(
+            ADMIN_ID, 
+            f"💰 **Успешная покупка!**\n\nПользователь ID `{user_id}` купил Премиум на {days} дней.", 
+            parse_mode="Markdown"
+        )
     except Exception:
         pass
 
@@ -256,11 +295,19 @@ async def search_companion_start(message: Message):
 
         async with db.execute("SELECT * FROM active_chats WHERE user1 = ? OR user2 = ?", (user_id, user_id)) as cursor:
             if await cursor.fetchone():
-                await message.answer("Вы уже в чате! Завершите текущий диалог.")
+                await message.answer(
+                    "⚠️ **Активный диалог**\n\n"
+                    "<i>Вы уже находитесь в беседе! Сначала завершите текущий диалог.</i>",
+                    parse_mode="HTML"
+                )
                 return
 
     if is_premium:
-        await message.answer("👥 Выберите, кого вы хотите найти:", reply_markup=search_preference_kb)
+        await message.answer(
+            "👥 **Настройка поиска**\n\n"
+            "<i>Выберите, кого именно вы хотите найти:</i>",
+            reply_markup=search_preference_kb, parse_mode="HTML"
+        )
     else:
         await start_searching(message, "Любой")
 
@@ -272,7 +319,11 @@ async def process_search_preference(message: Message):
             res = await cursor.fetchone()
     
     if not res or not res[0]:
-        await message.answer("Функция выбора пола доступна только для Премиум-пользователей.", reply_markup=main_kb)
+        await message.answer(
+            "🔒 **Доступно с Премиум**\n\n"
+            "<i>Функция выбора пола собеседника доступна только для владельцев Премиум-статуса.</i>",
+            reply_markup=main_kb, parse_mode="HTML"
+        )
         return
 
     pref_map = {"🔎 Любой": "Любой", "👨 Парень": "Парень", "👩 Девушка": "Девушка"}
@@ -304,7 +355,7 @@ async def start_searching(message: Message, target_gender: str):
             await db.commit()
             
             connect_time = datetime.now().strftime("%H:%M")
-            safety_warning = "🛡 <b>Внимание: не переходите в ЛС и не отправляйте личные данные!</b>\n\n"
+            safety_warning = "🛡 <b>Правила безопасности:</b> не переходите в сторонние ЛС и не передавайте личные данные!\n\n"
 
             async def get_profile(target_id, viewer_prem):
                 async with aiosqlite.connect("chat.db") as c:
@@ -313,8 +364,8 @@ async def start_searching(message: Message, target_gender: str):
                 if not res: return "Анкета не найдена."
                 c_name, c_age, c_gender, c_username = res
                 if viewer_prem:
-                    return f"📋 <b>Анкета:</b>\nИмя: {c_name}\nВозраст: {c_age}\nПол: {c_gender}\nЮзернейм: @{c_username or 'нет'}\nВремя: {connect_time}"
-                return "🔒 <i>Хотите видеть полную анкету? Оформите Премиум!</i>"
+                    return f"📋 <b>Анкета собеседника:</b>\n• Имя: {c_name}\n• Возраст: {c_age}\n• Пол: {c_gender}\n• Юзернейм: @{c_username or 'нет'}\n• Время: {connect_time}"
+                return "🔒 <i>Хотите видеть полную анкету? Оформите Премиум-подписку!</i>"
 
             async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (companion_id,)) as cur:
                 comp_prem_row = await cur.fetchone()
@@ -328,11 +379,15 @@ async def start_searching(message: Message, target_gender: str):
             p2 = await get_profile(user_id, comp_prem)
 
             await message.answer(f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p1}", reply_markup=main_kb, parse_mode="HTML")
-            await message.bot.send_message(companion_id, f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p2}", parse_mode="HTML")
+            await message.bot.send_message(companion_id, f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p2}", reply_markup=main_kb, parse_mode="HTML")
         else:
             await db.execute("INSERT OR REPLACE INTO queue (user_id, target_gender) VALUES (?, ?)", (user_id, target_gender))
             await db.commit()
-            await message.answer("Ищем подходящего собеседника... Ожидайте ⏳", reply_markup=main_kb)
+            await message.answer(
+                "🔎 **Ищем собеседника...**\n\n"
+                "<i>Мы подбираем для вас подходящего человека. Пожалуйста, ожидайте ⏳</i>",
+                reply_markup=main_kb, parse_mode="HTML"
+            )
 
 @dp.message(F.text == "🎁 Подарить звёзды")
 async def gift_stars_menu(message: Message):
@@ -342,7 +397,11 @@ async def gift_stars_menu(message: Message):
             chat = await cursor.fetchone()
 
     if not chat:
-        await message.answer("❌ Вы не в активном диалоге с собеседником!")
+        await message.answer(
+            "❌ **Ошибка отправки подарка**\n\n"
+            "<i>Вы не находитесь в активном диалоге с собеседником!</i>",
+            parse_mode="HTML"
+        )
         return
 
     companion_id = chat[1] if chat[0] == user_id else chat[0]
@@ -351,7 +410,11 @@ async def gift_stars_menu(message: Message):
         [InlineKeyboardButton(text="⭐ Подарить 5 звёзд", callback_data=f"gift_5_{companion_id}"),
          InlineKeyboardButton(text="⭐ Подарить 10 звёзд", callback_data=f"gift_10_{companion_id}")]
     ])
-    await message.answer("🎁 Выберите, сколько звёзд подарить собеседнику:", reply_markup=gift_kb)
+    await message.answer(
+        "🎁 **Система подарков**\n\n"
+        "<i>Выберите количество звёзд для перевода собеседнику:</i>",
+        reply_markup=gift_kb, parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data.startswith("gift_"))
 async def process_gift(callback: types.CallbackQuery):
@@ -366,17 +429,21 @@ async def process_gift(callback: types.CallbackQuery):
         sender_balance = res[0] if res else 0
 
         if sender_balance < amount:
-            await callback.answer(f"❌ Недостаточно звёзд! Баланс: {sender_balance} ⭐", show_alert=True)
+            await callback.answer(f"❌ Недостаточно звёзд на балансе! У вас: {sender_balance} ⭐", show_alert=True)
             return
 
         await db.execute("UPDATE users SET stars_balance = stars_balance - ? WHERE user_id = ?", (amount, sender_id))
         await db.execute("UPDATE users SET stars_balance = stars_balance + ? WHERE user_id = ?", (amount, target_id))
         await db.commit()
 
-    await callback.answer(f"🎁 Вы подарили {amount} ⭐!", show_alert=True)
-    await callback.message.edit_text(f"✅ Подарок отправлен! Передано {amount} ⭐.")
+    await callback.answer(f"🎁 Вы успешно подарили {amount} ⭐!", show_alert=True)
+    await callback.message.edit_text(f"✅ **Подарок отправлен!**\n\n<i>Успешно передано: {amount} ⭐</i>", parse_mode="HTML")
     try:
-        await callback.bot.send_message(target_id, f"🎉 Вам подарок! Собеседник перевел вам {amount} ⭐!")
+        await callback.bot.send_message(
+            target_id, 
+            f"🎉 **Вам подарок!**\n\n<i>Собеседник перевел вам {amount} ⭐!</i>", 
+            parse_mode="HTML"
+        )
     except Exception:
         pass
 
@@ -399,60 +466,20 @@ async def stop_chat(message: Message):
                 [InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"complaint_{companion_id}")]
             ])
 
-            await message.answer("Диалог завершен. Оцените собеседника:", reply_markup=rating_kb)
+            await message.answer(
+                "🛑 **Диалог завершен**\n\n"
+                "<i>Пожалуйста, оцените вашего собеседника:</i>",
+                reply_markup=rating_kb, parse_mode="HTML"
+            )
             try:
-                await message.bot.send_message(companion_id, "Собеседник покинул чат. Оцените его:", reply_markup=rating_kb)
+                await message.bot.send_message(
+                    companion_id, 
+                    "🛑 **Собеседник покинул чат**\n\n"
+                    "<i>Пожалуйста, оцените общение с ним:</i>", 
+                    reply_markup=rating_kb, parse_mode="HTML"
+                )
             except Exception:
                 pass
             
-            await message.answer("Главное меню:", reply_markup=main_kb)
+            await message.answer("🏠 Главное меню:", reply_markup=main_kb)
             try:
-                await message.bot.send_message(companion_id, "Главное меню:", reply_markup=main_kb)
-            except Exception:
-                pass
-        else:
-            await message.answer("Вы сейчас ни с кем не общаетесь.", reply_markup=main_kb)
-
-@dp.callback_query(F.data.startswith("complaint_"))
-async def process_complaint(callback: types.CallbackQuery):
-    target_id = int(callback.data.split("_")[1])
-    async with aiosqlite.connect("chat.db") as db:
-        await db.execute("UPDATE users SET complaints = complaints + 1 WHERE user_id = ?", (target_id,))
-        async with db.execute("SELECT complaints FROM users WHERE user_id = ?", (target_id,)) as cursor:
-            res = await cursor.fetchone()
-        complaints_count = res[0] if res else 0
-
-        if complaints_count >= 20:
-            await db.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
-            try:
-                await callback.bot.send_message(target_id, "❌ Вы заблокированы за жалобы.")
-            except Exception:
-                pass
-        await db.commit()
-
-    await callback.answer("⚠️ Жалоба отправлена.", show_alert=True)
-    await callback.message.edit_text("⚠️ Жалоба принята.")
-
-@dp.callback_query(F.data.startswith("rate_"))
-async def process_rating(callback: types.CallbackQuery):
-    await callback.answer("Спасибо за оценку!", show_alert=True)
-    await callback.message.edit_text("✅ Диалог закрыт.")
-
-@dp.message()
-async def forward_handler(message: Message):
-    service_buttons = [
-        "🔎 Найти собеседника", "👤 Профиль", "⭐ Купить Премиум", 
-        "🎁 Подарить звёзды", "❌ Остановить диалог", "Парень", "Девушка",
-        "🔎 Любой", "👨 Парень", "👩 Девушка"
-    ]
-    
-    if message.text in service_buttons or (message.text and message.text.startswith("/")):
-        return
-
-    user_id = message.from_user.id
-    async with aiosqlite.connect("chat.db") as db:
-        async with db.execute("SELECT user1, user2 FROM active_chats WHERE user1 = ? OR user2 = ?", (user_id, user_id)) as cursor:
-            chat = await cursor.fetchone()
-        
-        if chat:
-            companion_id = chat[1] if chat[0] == user_id else 
