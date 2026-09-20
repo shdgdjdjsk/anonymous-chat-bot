@@ -484,8 +484,8 @@ async def stop_chat(message: Message):
             await message.answer("🏠 Главное меню:", reply_markup=main_kb)
         try:
                 await message.bot.send_message(companion_id, "🏠 Главное меню:", reply_markup=main_kb)
-            except Exception:
-                pass
+        except Exception:
+            pass
         else:
                 
             await message.answer(
