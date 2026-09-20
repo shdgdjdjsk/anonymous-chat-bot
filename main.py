@@ -455,5 +455,4 @@ async def forward_handler(message: Message):
             chat = await cursor.fetchone()
         
         if chat:
-            companion_id = chat[1] if chat[0] == user_id else chat[0]
-            await db.exec
+            companion_id = chat[1] if chat[0] == user_id else 
