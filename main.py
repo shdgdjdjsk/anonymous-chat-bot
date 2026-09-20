@@ -482,11 +482,12 @@ async def stop_chat(message: Message):
                 pass
             
             await message.answer("🏠 Главное меню:", reply_markup=main_kb)
-                       try:
+        try:
                 await message.bot.send_message(companion_id, "🏠 Главное меню:", reply_markup=main_kb)
             except Exception:
                 pass
         else:
+                
             await message.answer(
                 "⚠️ **Информация**\n\n"
                 "<i>Вы сейчас ни с кем не общаетесь.</i>",
