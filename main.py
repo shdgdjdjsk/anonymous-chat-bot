@@ -482,4 +482,86 @@ async def stop_chat(message: Message):
                 pass
             
             await message.answer("🏠 Главное меню:", reply_markup=main_kb)
+                       try:
+                await message.bot.send_message(companion_id, "🏠 Главное меню:", reply_markup=main_kb)
+            except Exception:
+                pass
+        else:
+            await message.answer(
+                "⚠️ **Информация**\n\n"
+                "<i>Вы сейчас ни с кем не общаетесь.</i>",
+                reply_markup=main_kb, parse_mode="HTML"
+            )
+
+@dp.callback_query(F.data.startswith("complaint_"))
+async def process_complaint(callback: types.CallbackQuery):
+    target_id = int(callback.data.split("_")[1])
+    async with aiosqlite.connect("chat.db") as db:
+        await db.execute("UPDATE users SET complaints = complaints + 1 WHERE user_id = ?", (target_id,))
+        async with db.execute("SELECT complaints FROM users WHERE user_id = ?", (target_id,)) as cursor:
+            res = await cursor.fetchone()
+        complaints_count = res[0] if res else 0
+
+        if complaints_count >= 20:
+            await db.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
             try:
+                await callback.bot.send_message(
+                    target_id, 
+                    "🚫 **Блокировка**\n\n"
+                    "<i>Вы были заблокированы в боте за большое количество жалоб.</i>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        await db.commit()
+
+    await callback.answer("⚠️ Жалоба успешно отправлена.", show_alert=True)
+    await callback.message.edit_text("⚠️ **Жалоба принята.**\n\n<i>Спасибо за помощь в модерации.</i>", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("rate_"))
+async def process_rating(callback: types.CallbackQuery):
+    await callback.answer("Спасибо за вашу оценку!", show_alert=True)
+    await callback.message.edit_text("✅ **Диалог полностью закрыт.**\n\n<i>Можете искать нового собеседника!</i>", parse_mode="HTML")
+
+@dp.message()
+async def forward_handler(message: Message):
+    service_buttons = [
+        "🔎 Найти собеседника", "👤 Профиль", "⭐ Купить Премиум", 
+        "🎁 Подарить звёзды", "❌ Остановить диалог", "Парень", "Девушка",
+        "🔎 Любой", "👨 Парень", "👩 Девушка"
+    ]
+    
+    if message.text in service_buttons or (message.text and message.text.startswith("/")):
+        return
+
+    user_id = message.from_user.id
+    async with aiosqlite.connect("chat.db") as db:
+        async with db.execute("SELECT user1, user2 FROM active_chats WHERE user1 = ? OR user2 = ?", (user_id, user_id)) as cursor:
+            chat = await cursor.fetchone()
+        
+        if chat:
+            companion_id = chat[1] if chat[0] == user_id else chat[0]
+            
+            try:
+                await message.send_copy(chat_id=companion_id)
+                
+                await db.execute("UPDATE users SET msgs_sent = msgs_sent + 1 WHERE user_id = ?", (user_id,))
+                await db.execute("UPDATE users SET msgs_received = msgs_received + 1 WHERE user_id = ?", (companion_id,))
+                await db.commit()
+            except Exception:
+                await message.answer("❌ Не удалось отправить сообщение собеседнику.")
+        else:
+            await message.answer(
+                "⚠️ **Вы не в диалоге**\n\n"
+                "<i>Нажмите кнопку «🔎 Найти собеседника», чтобы начать общение!</i>",
+                reply_markup=main_kb, parse_mode="HTML"
+            )
+
+async def main():
+    await init_db()
+    logging.basicConfig(level=logging.INFO)
+    print("Бот успешно запущен и готов к работе!")
+    await dp.start_polling(await Bot(token=TOKEN))
+
+if __name__ == "__main__":
+    asyncio.run(main())
