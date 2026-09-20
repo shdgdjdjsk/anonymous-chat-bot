@@ -562,7 +562,7 @@ async def main():
     await init_db()
     logging.basicConfig(level=logging.INFO)
     print("Бот успешно запущен и готов к работе!")
-    await dp.start_polling(await Bot(token=TOKEN))
+    await dp.start_polling(Bot(token=TOKEN))
 
 if __name__ == "__main__":
     asyncio.run(main())
