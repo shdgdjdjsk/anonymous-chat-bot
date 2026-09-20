@@ -331,64 +331,72 @@ async def process_search_preference(message: Message):
     await start_searching(message, target_gender)
 
 async def start_searching(message: Message, target_gender: str):
-    user_id = message.from_user.id
-    async with aiosqlite.connect("chat.db") as db:
-        async with db.execute("SELECT gender FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            user_row = await cursor.fetchone()
-        user_gender = user_row[0] if user_row else "Любой"
+  user_id = message.from_user.id
+  async with aiosqlite.connect("chat.db") as db:
+    # Узнаем пол текущего пользователя
+    async with db.execute(
+        "SELECT gender FROM users WHERE user_id = ?", (user_id,)
+    ) as cursor:
+      user_row = await cursor.fetchone()
+      user_gender = user_row[0] if user_row else "Не указан"
 
-        if target_gender == "Любой":
-            async with db.execute("SELECT user_id, gender FROM queue WHERE user_id != ?", (user_id,)) as cursor:
-                companion = await cursor.fetchone()
-        else:
-            async with db.execute("""
-                SELECT q.user_id, q.target_gender FROM queue q 
-                JOIN users u ON q.user_id = u.user_id 
-                WHERE q.user_id != ? AND u.gender = ? AND (q.target_gender = 'Любой' OR q.target_gender = ?)
-            """, (user_id, target_gender, user_gender)) as cursor:
-                companion = await cursor.fetchone()
+    # Удаляем из старой очереди и добавляем в актуальную
+    await db.execute("DELETE FROM queue WHERE user_id = ?", (user_id,))
+    await db.execute(
+        "INSERT INTO queue (user_id, target_gender) VALUES (?, ?)",
+        (user_id, target_gender),
+    )
+    await db.commit()
 
-        if companion:
-            companion_id = companion[0]
-            await db.execute("DELETE FROM queue WHERE user_id = ?", (companion_id,))
-            await db.execute("INSERT INTO active_chats VALUES (?, ?)", (user_id, companion_id))
-            await db.commit()
-            
-            connect_time = datetime.now().strftime("%H:%M")
-            safety_warning = "🛡 <b>Правила безопасности:</b> не переходите в сторонние ЛС и не передавайте личные данные!\n\n"
+    # Ищем подходящего компаньона в очереди
+    async with db.execute(
+        """
+            SELECT q.user_id FROM queue q 
+            JOIN users u ON q.user_id = u.user_id 
+            WHERE q.user_id != ? 
+            AND (q.target_gender = ? OR q.target_gender = 'Любой')
+            AND (? = 'Любой' OR u.gender = ?)
+            LIMIT 1
+        """,
+        (user_id, user_gender, target_gender, target_gender),
+    ) as cursor:
+      companion = await cursor.fetchone()
 
-            async def get_profile(target_id, viewer_prem):
-                async with aiosqlite.connect("chat.db") as c:
-                    async with c.execute("SELECT name, age, gender, username FROM users WHERE user_id = ?", (target_id,)) as cur:
-                        res = await cur.fetchone()
-                if not res: return "Анкета не найдена."
-                c_name, c_age, c_gender, c_username = res
-                if viewer_prem:
-                    return f"📋 <b>Анкета собеседника:</b>\n• Имя: {c_name}\n• Возраст: {c_age}\n• Пол: {c_gender}\n• Юзернейм: @{c_username or 'нет'}\n• Время: {connect_time}"
-                return "🔒 <i>Хотите видеть полную анкету? Оформите Премиум-подписку!</i>"
+    if companion:
+      companion_id = companion[0]
+      # Удаляем обоих из очереди
+      await db.execute(
+          "DELETE FROM queue WHERE user_id IN (?, ?)", (user_id, companion_id)
+      )
+      # Создаем активный чат
+      await db.execute(
+          "INSERT INTO active_chats (user1_id, user2_id) VALUES (?, ?)",
+          (user_id, companion_id),
+      )
+      await db.commit()
 
-            async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (companion_id,)) as cur:
-                comp_prem_row = await cur.fetchone()
-            comp_prem = comp_prem_row[0] if comp_prem_row else 0
-
-            async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (user_id,)) as cur:
-                user_prem_row = await cur.fetchone()
-            user_prem = user_prem_row[0] if user_prem_row else 0
-
-            p1 = await get_profile(companion_id, user_prem)
-            p2 = await get_profile(user_id, comp_prem)
-
-            await message.answer(f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p1}", reply_markup=main_kb, parse_mode="HTML")
-            await message.bot.send_message(companion_id, f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p2}", reply_markup=main_kb, parse_mode="HTML")
-        else:
-            await db.execute("INSERT OR REPLACE INTO queue (user_id, target_gender) VALUES (?, ?)", (user_id, target_gender))
-            await db.commit()
-            await message.answer(
-                "🔎 **Ищем собеседника...**\n\n"
-                "<i>Мы подбираем для вас подходящего человека. Пожалуйста, ожидайте ⏳</i>",
-                reply_markup=main_kb, parse_mode="HTML"
-            )
-
+      # Уведомляем обоих пользователей о том, что собеседник найден
+      await message.answer(
+          "🎉 Собеседник найден! Можете общаться.\nДля остановки диалога"
+          " нажмите кнопку ниже.",
+          reply_markup=stop_chat_kb,
+      )
+      try:
+        await message.bot.send_message(
+            companion_id,
+            "🎉 Собеседник найден! Можете общаться.\nДля остановки диалога"
+            " нажмите кнопку ниже.",
+            reply_markup=stop_chat_kb,
+        )
+      except Exception:
+        pass
+    else:
+      await message.answer(
+          "🔍 Ищем вам собеседника, подождите немного...",
+          reply_markup=stop_search_kb,
+      )
+      #async def start_searching(message: Message, target_gender: str):
+    us
 @dp.message(F.text == "🎁 Подарить звёзды")
 async def gift_stars_menu(message: Message):
     user_id = message.from_user.id
