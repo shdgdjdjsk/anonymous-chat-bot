@@ -562,6 +562,7 @@ async def main():
     await init_db()
     logging.basicConfig(level=logging.INFO)
     print("Бот успешно запущен и готов к работе!")
+    await Bot(token=TOKEN).delete_webhook(drop_pending_updates=True)
     await dp.start_polling(Bot(token=TOKEN))
 
 if __name__ == "__main__":
