@@ -15,7 +15,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 TOKEN = "8376223950:AAE4GEMYTlBtVWz80cBuUyiblVZ9_wymFXo"
 ADMIN_ID = 8859438543
 
-# --- БАЗА ДАННЫХ ---
 async def init_db():
     async with aiosqlite.connect("chat.db") as db:
         await db.execute("""
@@ -329,7 +328,7 @@ async def start_searching(message: Message, target_gender: str):
             p2 = await get_profile(user_id, comp_prem)
 
             await message.answer(f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p1}", reply_markup=main_kb, parse_mode="HTML")
-            await message.bot.send_message(companion_id, f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p2}", reply_markup=main_kb, parse_mode="HTML")
+            await message.bot.send_message(companion_id, f"🎉 <b>Собеседник найден!</b>\n\n{safety_warning}{p2}", parse_mode="HTML")
         else:
             await db.execute("INSERT OR REPLACE INTO queue (user_id, target_gender) VALUES (?, ?)", (user_id, target_gender))
             await db.commit()
@@ -456,4 +455,5 @@ async def forward_handler(message: Message):
             chat = await cursor.fetchone()
         
         if chat:
-            companion_id = chat[1] if chat[0] == us
+            companion_id = chat[1] if chat[0] == user_id else chat[0]
+            await db.exec
