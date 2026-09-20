@@ -1,0 +1,1423 @@
+import asyncio
+import logging
+import sqlite3
+import time
+from collections import deque
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    LabeledPrice,
+)
+from aiogram.exceptions import TelegramBadRequest
+
+
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+TOKEN = "8968057379:AAHswJx41PlqPkJGiP6ZCTQmdJdbs3BEl4A"
+
+# Цены
+PREMIUM_PRICE = 100
+PRIORITY_PRICE = 50
+INTERESTS_PRICE = 30
+THEMES_PRICE = 20
+REACTIONS_PRICE = 10
+
+# 30 дней
+MONTH = 30 * 24 * 60 * 60
+
+
+logging.basicConfig(level=logging.INFO)
+
+bot = Bot(TOKEN)
+dp = Dispatcher()
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+db = sqlite3.connect("anonymous_chat.db", check_same_thread=False)
+cursor = db.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    gender TEXT DEFAULT 'unknown',
+    search_gender TEXT DEFAULT 'any',
+    interests TEXT DEFAULT '',
+    premium_until INTEGER DEFAULT 0,
+    priority_until INTEGER DEFAULT 0,
+    interests_until INTEGER DEFAULT 0,
+    themes_until INTEGER DEFAULT 0,
+    reactions INTEGER DEFAULT 0,
+    banned INTEGER DEFAULT 0,
+    created_at INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter INTEGER,
+    reported INTEGER,
+    created_at INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    payload TEXT,
+    amount INTEGER,
+    charge_id TEXT,
+    created_at INTEGER
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS blocks (
+    user_id INTEGER,
+    blocked_id INTEGER,
+    UNIQUE(user_id, blocked_id)
+)
+""")
+
+db.commit()
+
+
+# ============================================================
+# MEMORY
+# ============================================================
+
+# user_id -> partner_id
+pairs = {}
+
+# пользователи, которые ищут собеседника
+waiting = deque()
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def now():
+    return int(time.time())
+
+
+def get_user(user_id):
+    cursor.execute(
+        "SELECT * FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+    return cursor.fetchone()
+
+
+def ensure_user(user_id):
+    if not get_user(user_id):
+        cursor.execute("""
+        INSERT INTO users (user_id, created_at)
+        VALUES (?, ?)
+        """, (user_id, now()))
+        db.commit()
+
+
+def is_banned(user_id):
+    user = get_user(user_id)
+    return bool(user and user[9])
+
+
+def premium_active(user_id):
+    user = get_user(user_id)
+    return bool(user and user[5] > now())
+
+
+def priority_active(user_id):
+    user = get_user(user_id)
+    return bool(user and user[6] > now())
+
+
+def interests_active(user_id):
+    user = get_user(user_id)
+    return bool(user and user[7] > now())
+
+
+def themes_active(user_id):
+    user = get_user(user_id)
+    return bool(user and user[8] > now())
+
+
+def get_gender(user_id):
+    user = get_user(user_id)
+    return user[1] if user else "unknown"
+
+
+def get_search_gender(user_id):
+    user = get_user(user_id)
+    return user[2] if user else "any"
+
+
+def get_interests(user_id):
+    user = get_user(user_id)
+    if not user or not user[3]:
+        return []
+
+    return user[3].split(",")
+
+
+def remove_from_queue(user_id):
+    try:
+        waiting.remove(user_id)
+    except ValueError:
+        pass
+
+
+def blocked(user1, user2):
+    cursor.execute("""
+    SELECT 1 FROM blocks
+    WHERE user_id = ? AND blocked_id = ?
+    """, (user1, user2))
+
+    return cursor.fetchone() is not None
+
+
+def compatible(user1, user2):
+
+    if user1 == user2:
+        return False
+
+    if blocked(user1, user2) or blocked(user2, user1):
+        return False
+
+    if is_banned(user1) or is_banned(user2):
+        return False
+
+    gender1 = get_gender(user1)
+    gender2 = get_gender(user2)
+
+    wanted1 = get_search_gender(user1)
+    wanted2 = get_search_gender(user2)
+
+    # Первый пользователь выбирает пол
+    if wanted1 != "any":
+        if wanted1 != gender2:
+            return False
+
+    # Второй пользователь тоже выбирает пол
+    if wanted2 != "any":
+        if wanted2 != gender1:
+            return False
+
+    return True
+
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
+
+def main_menu():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔎 Найти собеседника",
+                    callback_data="search"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👤 Мой профиль",
+                    callback_data="profile"
+                ),
+                InlineKeyboardButton(
+                    text="⭐ Premium",
+                    callback_data="premium"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎨 Оформление",
+                    callback_data="themes"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Настройки",
+                    callback_data="settings"
+                )
+            ]
+        ]
+    )
+
+
+def chat_menu():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⏭ Следующий",
+                    callback_data="next"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Завершить",
+                    callback_data="stop"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚨 Пожаловаться",
+                    callback_data="report"
+                ),
+                InlineKeyboardButton(
+                    text="🚫 Заблокировать",
+                    callback_data="block"
+                )
+            ]
+        ]
+    )
+
+
+def premium_menu():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ Premium — {PREMIUM_PRICE} Stars",
+                    callback_data="buy_premium"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🔥 Приоритет — {PRIORITY_PRICE} Stars",
+                    callback_data="buy_priority"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🎯 Интересы — {INTERESTS_PRICE} Stars",
+                    callback_data="buy_interests"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🎨 Темы — {THEMES_PRICE} Stars",
+                    callback_data="buy_themes"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"✨ Реакции — {REACTIONS_PRICE} Stars",
+                    callback_data="buy_reactions"
+                )
+            ]
+        ]
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+@dp.message(CommandStart())
+async def start(message: Message):
+
+    user_id = message.from_user.id
+
+    ensure_user(user_id)
+
+    if is_banned(user_id):
+        await message.answer(
+            "🚫 Тебе закрыт доступ к этому боту."
+        )
+        return
+
+    await message.answer(
+        "💬 <b>АНОНИМНЫЙ ЧАТ</b>\n\n"
+        "Общайся со случайными людьми анонимно.\n\n"
+        "🔎 Найти собеседника — бесплатно\n"
+        "⭐ Premium — дополнительные возможности\n\n"
+        "⚠️ Не отправляй незнакомцам личные данные.",
+        parse_mode="HTML",
+        reply_markup=main_menu(),
+        protect_content=True
+    )
+
+
+# ============================================================
+# PROFILE
+# ============================================================
+
+@dp.callback_query(F.data == "profile")
+async def profile(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+    ensure_user(user_id)
+
+    gender = get_gender(user_id)
+    search_gender = get_search_gender(user_id)
+    interests = get_interests(user_id)
+
+    gender_names = {
+        "male": "👦 Парень",
+        "female": "👧 Девушка",
+        "unknown": "Не указан"
+    }
+
+    search_names = {
+        "male": "👦 Парни",
+        "female": "👧 Девушки",
+        "any": "🌍 Все"
+    }
+
+    premium = "⭐ Premium" if premium_active(user_id) else "Обычный"
+
+    text = (
+        "👤 <b>МОЙ ПРОФИЛЬ</b>\n\n"
+        f"Пол: {gender_names.get(gender, 'Не указан')}\n"
+        f"Кого искать: {search_names.get(search_gender, 'Все')}\n"
+        f"Интересы: {', '.join(interests) if interests else 'не выбраны'}\n"
+        f"Статус: {premium}"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👦 Мой пол",
+                    callback_data="gender"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔎 Кого искать",
+                    callback_data="search_gender"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎯 Интересы",
+                    callback_data="interest_select"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="home"
+                )
+            ]
+        ]
+    )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# GENDER
+# ============================================================
+
+@dp.callback_query(F.data == "gender")
+async def gender_menu(callback: CallbackQuery):
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👦 Парень",
+                    callback_data="set_gender_male"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👧 Девушка",
+                    callback_data="set_gender_female"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❓ Не указывать",
+                    callback_data="set_gender_unknown"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="profile"
+                )
+            ]
+        ]
+    )
+
+    await callback.message.edit_text(
+        "👤 <b>Выбери свой пол</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("set_gender_"))
+async def set_gender(callback: CallbackQuery):
+
+    gender = callback.data.replace("set_gender_", "")
+    user_id = callback.from_user.id
+
+    cursor.execute(
+        "UPDATE users SET gender = ? WHERE user_id = ?",
+        (gender, user_id)
+    )
+
+    db.commit()
+
+    await callback.answer("Сохранено ✅")
+    await profile(callback)
+
+
+# ============================================================
+# SEARCH GENDER
+# ============================================================
+
+@dp.callback_query(F.data == "search_gender")
+async def search_gender_menu(callback: CallbackQuery):
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌍 Все",
+                    callback_data="wanted_any"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👦 Парни",
+                    callback_data="wanted_male"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👧 Девушки",
+                    callback_data="wanted_female"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="profile"
+                )
+            ]
+        ]
+    )
+
+    await callback.message.edit_text(
+        "🔎 <b>Кого хочешь искать?</b>\n\n"
+        "Эта функция работает бесплатно.",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("wanted_"))
+async def set_search_gender(callback: CallbackQuery):
+
+    value = callback.data.replace("wanted_", "")
+    user_id = callback.from_user.id
+
+    # Фильтр по полу доступен Premium
+    if value != "any" and not premium_active(user_id):
+        await callback.message.answer(
+            "⭐ Выбор пола доступен в Premium.",
+            reply_markup=premium_menu(),
+            protect_content=True
+        )
+        await callback.answer()
+        return
+
+    cursor.execute(
+        "UPDATE users SET search_gender = ? WHERE user_id = ?",
+        (value, user_id)
+    )
+
+    db.commit()
+
+    await callback.answer("Сохранено ✅")
+    await profile(callback)
+
+
+# ============================================================
+# INTERESTS
+# ============================================================
+
+INTERESTS = {
+    "music": "🎵 Музыка",
+    "games": "🎮 Игры",
+    "movies": "🎬 Фильмы",
+    "anime": "🍥 Аниме",
+    "books": "📚 Книги",
+    "art": "🎨 Рисование",
+    "sport": "⚽ Спорт",
+    "memes": "😂 Мемы"
+}
+
+
+@dp.callback_query(F.data == "interest_select")
+async def interest_select(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    if not interests_active(user_id):
+        await callback.message.edit_text(
+            "🎯 <b>Интересы</b>\n\n"
+            f"Эта функция доступна за ⭐ {INTERESTS_PRICE}.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"⭐ Купить — {INTERESTS_PRICE}",
+                            callback_data="buy_interests"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data="profile"
+                        )
+                    ]
+                ]
+            )
+        )
+        await callback.answer()
+        return
+
+    buttons = []
+
+    for key, name in INTERESTS.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=f"toggle_interest_{key}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="profile"
+        )
+    ])
+
+    await callback.message.edit_text(
+        "🎯 <b>Выбери интересы</b>\n\n"
+        "Они помогут искать людей с похожими интересами.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        )
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("toggle_interest_"))
+async def toggle_interest(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    if not interests_active(user_id):
+        await callback.answer(
+            "Сначала купи функцию интересов.",
+            show_alert=True
+        )
+        return
+
+    key = callback.data.replace(
+        "toggle_interest_",
+        ""
+    )
+
+    current = get_interests(user_id)
+
+    if key in current:
+        current.remove(key)
+    else:
+        if len(current) >= 5:
+            await callback.answer(
+                "Можно выбрать максимум 5 интересов.",
+                show_alert=True
+            )
+            return
+
+        current.append(key)
+
+    cursor.execute(
+        "UPDATE users SET interests = ? WHERE user_id = ?",
+        (",".join(current), user_id)
+    )
+
+    db.commit()
+
+    await callback.answer("Обновлено ✅")
+
+
+# ============================================================
+# SEARCH
+# ============================================================
+
+@dp.callback_query(F.data == "search")
+async def search(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    if is_banned(user_id):
+        await callback.answer(
+            "Доступ заблокирован.",
+            show_alert=True
+        )
+        return
+
+    if user_id in pairs:
+        await callback.answer(
+            "У тебя уже есть собеседник.",
+            show_alert=True
+        )
+        return
+
+    remove_from_queue(user_id)
+
+    # Premium priority
+    if priority_active(user_id) or premium_active(user_id):
+        waiting.appendleft(user_id)
+    else:
+        waiting.append(user_id)
+
+    await callback.message.edit_text(
+        "🔎 <b>ИЩУ СОБЕСЕДНИКА...</b>\n\n"
+        "Подожди немного 👀",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить поиск",
+                        callback_data="cancel_search"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await find_matches()
+
+    await callback.answer()
+
+
+async def find_matches():
+
+    changed = True
+
+    while changed:
+
+        changed = False
+
+        if len(waiting) < 2:
+            return
+
+        users = list(waiting)
+
+        for user1 in users:
+
+            if user1 not in waiting:
+                continue
+
+            for user2 in users:
+
+                if user1 == user2:
+                    continue
+
+                if user2 not in waiting:
+                    continue
+
+                if compatible(user1, user2):
+
+                    remove_from_queue(user1)
+                    remove_from_queue(user2)
+
+                    pairs[user1] = user2
+                    pairs[user2] = user1
+
+                    await bot.send_message(
+                        user1,
+                        "💚 <b>СОБЕСЕДНИК НАЙДЕН!</b>\n\n"
+                        "Можете начинать общение.",
+                        parse_mode="HTML",
+                        reply_markup=chat_menu(),
+                        protect_content=True
+                    )
+
+                    await bot.send_message(
+                        user2,
+                        "💚 <b>СОБЕСЕДНИК НАЙДЕН!</b>\n\n"
+                        "Можете начинать общение.",
+                        parse_mode="HTML",
+                        reply_markup=chat_menu(),
+                        protect_content=True
+                    )
+
+                    changed = True
+                    break
+
+            if changed:
+                break
+
+
+@dp.callback_query(F.data == "cancel_search")
+async def cancel_search(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    remove_from_queue(user_id)
+
+    await callback.message.edit_text(
+        "❌ Поиск отменён.",
+        reply_markup=main_menu()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# NEXT
+# ============================================================
+
+@dp.callback_query(F.data == "next")
+async def next_chat(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    partner = pairs.pop(user_id, None)
+
+    if partner:
+
+        pairs.pop(partner, None)
+
+        await bot.send_message(
+            partner,
+            "⏭️ Собеседник покинул чат.",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    remove_from_queue(user_id)
+
+    await callback.message.edit_text(
+        "🔎 Ищу нового собеседника...",
+        protect_content=True
+    )
+
+    waiting.appendleft(user_id)
+
+    await find_matches()
+
+    await callback.answer()
+
+
+# ============================================================
+# STOP
+# ============================================================
+
+@dp.callback_query(F.data == "stop")
+async def stop(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    partner = pairs.pop(user_id, None)
+
+    if partner:
+
+        pairs.pop(partner, None)
+
+        await bot.send_message(
+            partner,
+            "❌ Собеседник завершил диалог.",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    remove_from_queue(user_id)
+
+    await callback.message.edit_text(
+        "❌ <b>Диалог завершён.</b>",
+        parse_mode="HTML",
+        reply_markup=main_menu(),
+        protect_content=True
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# REPORT
+# ============================================================
+
+@dp.callback_query(F.data == "report")
+async def report(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+    partner = pairs.get(user_id)
+
+    if not partner:
+        await callback.answer(
+            "Собеседника уже нет.",
+            show_alert=True
+        )
+        return
+
+    cursor.execute("""
+    INSERT INTO reports (reporter, reported, created_at)
+    VALUES (?, ?, ?)
+    """, (user_id, partner, now()))
+
+    db.commit()
+
+    await bot.send_message(
+        user_id,
+        "🚨 Жалоба отправлена.\n\n"
+        "Спасибо за помощь в поддержании порядка.",
+        protect_content=True
+    )
+
+    # Завершаем чат
+    pairs.pop(user_id, None)
+    pairs.pop(partner, None)
+
+    await bot.send_message(
+        partner,
+        "❌ Диалог завершён.",
+        reply_markup=main_menu(),
+        protect_content=True
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# BLOCK
+# ============================================================
+
+@dp.callback_query(F.data == "block")
+async def block(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+    partner = pairs.get(user_id)
+
+    if not partner:
+        await callback.answer(
+            "Собеседника уже нет.",
+            show_alert=True
+        )
+        return
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO blocks (user_id, blocked_id)
+    VALUES (?, ?)
+    """, (user_id, partner))
+
+    db.commit()
+
+    pairs.pop(user_id, None)
+    pairs.pop(partner, None)
+
+    await bot.send_message(
+        user_id,
+        "🚫 Пользователь заблокирован.",
+        reply_markup=main_menu(),
+        protect_content=True
+    )
+
+    await bot.send_message(
+        partner,
+        "❌ Собеседник завершил диалог.",
+        reply_markup=main_menu(),
+        protect_content=True
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# PREMIUM
+# ============================================================
+
+@dp.callback_query(F.data == "premium")
+async def premium(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    status = (
+        "⭐ Premium активен"
+        if premium_active(user_id)
+        else "Обычный аккаунт"
+    )
+
+    text = (
+        "⭐ <b>PREMIUM</b>\n\n"
+        f"Статус: {status}\n\n"
+        "Premium открывает:\n\n"
+        "🎯 интересы\n"
+        "🔥 приоритетный поиск\n"
+        "👦👧 фильтр собеседников\n"
+        "🎨 Premium-оформление\n"
+        "✨ специальные реакции\n\n"
+        f"⭐ {PREMIUM_PRICE} на 30 дней"
+    )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=premium_menu()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# THEMES
+# ============================================================
+
+@dp.callback_query(F.data == "themes")
+async def themes(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    if not themes_active(user_id) and not premium_active(user_id):
+
+        await callback.message.edit_text(
+            "🎨 <b>Premium-оформление</b>\n\n"
+            f"Доступно за ⭐ {THEMES_PRICE}.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"⭐ Купить — {THEMES_PRICE}",
+                            callback_data="buy_themes"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data="home"
+                        )
+                    ]
+                ]
+            )
+        )
+
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "🎨 <b>PREMIUM-ОФОРМЛЕНИЕ</b>\n\n"
+        "🌌 Ночная\n"
+        "🌸 Розовая\n"
+        "💜 Фиолетовая\n"
+        "🌊 Морская\n"
+        "🔥 Неоновая\n\n"
+        "Система оформления готова к расширению.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data="home"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# PAYMENT
+# ============================================================
+
+async def send_payment(
+    user_id,
+    title,
+    description,
+    payload,
+    amount
+):
+
+    await bot.send_invoice(
+        chat_id=user_id,
+        title=title,
+        description=description,
+        payload=payload,
+        currency="XTR",
+        prices=[
+            LabeledPrice(
+                label=title,
+                amount=amount
+            )
+        ],
+        protect_content=True
+    )
+
+
+@dp.callback_query(F.data == "buy_premium")
+async def buy_premium(callback: CallbackQuery):
+
+    await send_payment(
+        callback.from_user.id,
+        "⭐ Premium",
+        "Premium-доступ на 30 дней.",
+        "premium_30",
+        PREMIUM_PRICE
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "buy_priority")
+async def buy_priority(callback: CallbackQuery):
+
+    await send_payment(
+        callback.from_user.id,
+        "🔥 Приоритетный поиск",
+        "Приоритетный поиск на 30 дней.",
+        "priority_30",
+        PRIORITY_PRICE
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "buy_interests")
+async def buy_interests(callback: CallbackQuery):
+
+    await send_payment(
+        callback.from_user.id,
+        "🎯 Интересы",
+        "Выбор интересов на 30 дней.",
+        "interests_30",
+        INTERESTS_PRICE
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "buy_themes")
+async def buy_themes(callback: CallbackQuery):
+
+    await send_payment(
+        callback.from_user.id,
+        "🎨 Premium-темы",
+        "Premium-оформление на 30 дней.",
+        "themes_30",
+        THEMES_PRICE
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "buy_reactions")
+async def buy_reactions(callback: CallbackQuery):
+
+    await send_payment(
+        callback.from_user.id,
+        "✨ Специальные реакции",
+        "10 специальных реакций.",
+        "reactions_10",
+        REACTIONS_PRICE
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# PRE-CHECKOUT
+# ============================================================
+
+@dp.pre_checkout_query()
+async def pre_checkout(query):
+
+    payload = query.invoice_payload
+
+    allowed = {
+        "premium_30",
+        "priority_30",
+        "interests_30",
+        "themes_30",
+        "reactions_10"
+    }
+
+    if payload not in allowed:
+
+        await query.answer(
+            ok=False,
+            error_message="Неизвестный товар."
+        )
+
+        return
+
+    await query.answer(ok=True)
+
+
+# ============================================================
+# SUCCESSFUL PAYMENT
+# ============================================================
+
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+
+    user_id = message.from_user.id
+    payment = message.successful_payment
+
+    payload = payment.invoice_payload
+    amount = payment.total_amount
+    charge_id = payment.telegram_payment_charge_id
+
+    # Сохраняем оплату
+    cursor.execute("""
+    INSERT INTO payments
+    (user_id, payload, amount, charge_id, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        payload,
+        amount,
+        charge_id,
+        now()
+    ))
+
+    # Важно: успешная оплата подтверждается
+    # именно этим событием Telegram.
+    if payload == "premium_30":
+
+        old = get_user(user_id)[5]
+        start = max(old, now())
+        until = start + MONTH
+
+        cursor.execute("""
+        UPDATE users
+        SET premium_until = ?,
+            priority_until = ?,
+            interests_until = ?,
+            themes_until = ?
+        WHERE user_id = ?
+        """, (
+            until,
+            until,
+            until,
+            until,
+            user_id
+        ))
+
+        await message.answer(
+            "🎉 <b>Premium активирован!</b>\n\n"
+            "⭐ Теперь тебе доступны все Premium-функции "
+            "на 30 дней.",
+            parse_mode="HTML",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    elif payload == "priority_30":
+
+        old = get_user(user_id)[6]
+        start = max(old, now())
+
+        cursor.execute(
+            "UPDATE users SET priority_until = ? WHERE user_id = ?",
+            (start + MONTH, user_id)
+        )
+
+        await message.answer(
+            "🔥 Приоритетный поиск активирован на 30 дней!",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    elif payload == "interests_30":
+
+        old = get_user(user_id)[7]
+        start = max(old, now())
+
+        cursor.execute(
+            "UPDATE users SET interests_until = ? WHERE user_id = ?",
+            (start + MONTH, user_id)
+        )
+
+        await message.answer(
+            "🎯 Интересы разблокированы на 30 дней!",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    elif payload == "themes_30":
+
+        old = get_user(user_id)[8]
+        start = max(old, now())
+
+        cursor.execute(
+            "UPDATE users SET themes_until = ? WHERE user_id = ?",
+            (start + MONTH, user_id)
+        )
+
+        await message.answer(
+            "🎨 Premium-темы разблокированы на 30 дней!",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    elif payload == "reactions_10":
+
+        cursor.execute(
+            "UPDATE users SET reactions = reactions + 10 "
+            "WHERE user_id = ?",
+            (user_id,)
+        )
+
+        await message.answer(
+            "✨ Тебе начислено 10 специальных реакций!",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+    db.commit()
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@dp.callback_query(F.data == "home")
+async def home(callback: CallbackQuery):
+
+    await callback.message.edit_text(
+        "💬 <b>АНОНИМНЫЙ ЧАТ</b>\n\n"
+        "Выбери действие:",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+@dp.callback_query(F.data == "settings")
+async def settings(callback: CallbackQuery):
+
+    await callback.message.edit_text(
+        "⚙️ <b>НАСТРОЙКИ</b>\n\n"
+        "Твои сообщения передаются собеседнику "
+        "через бота.\n\n"
+        "⚠️ Не отправляй личные данные незнакомым людям.\n\n"
+        "Если собеседник нарушает правила — "
+        "используй 🚨 Пожаловаться.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data="home"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# TEXT MESSAGES
+# ============================================================
+
+@dp.message()
+async def messages(message: Message):
+
+    user_id = message.from_user.id
+
+    ensure_user(user_id)
+
+    if is_banned(user_id):
+        return
+
+    partner = pairs.get(user_id)
+
+    if not partner:
+
+        await message.answer(
+            "🔎 Сейчас у тебя нет собеседника.\n\n"
+            "Нажми «Найти собеседника».",
+            reply_markup=main_menu(),
+            protect_content=True
+        )
+
+        return
+
+    # Только передаём сообщение через бота.
+    try:
+
+        await bot.copy_message(
+            chat_id=partner,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id,
+            protect_content=True
+        )
+
+    except TelegramBadRequest:
+
+        await message.answer(
+            "⚠️ Не удалось отправить это сообщение.",
+            protect_content=True
+        )
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+async def main():
+
+    print("===================================")
+    print("🤖 ANONYMOUS CHAT BOT STARTED")
+    print("===================================")
+
+    await bot.delete_webhook(
+        drop_pending_updates=True
+    )
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
